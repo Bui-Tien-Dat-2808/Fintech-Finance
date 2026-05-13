@@ -1,0 +1,299 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/2181 && echo srvr >&3 && grep Mode <&3"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD", "bash", "-c", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+
+  hive-metastore:
+    build:
+      context: .
+      dockerfile: docker/hive/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: org.postgresql.Driver
+      CONNECTION_URL: jdbc:postgresql://postgres:5432/metastore
+      DB_USERNAME: admin
+      DB_PASSWORD: admin
+    ports:
+      - "9083:9083"
+    volumes:
+      - warehouse_data:/data/warehouse
+    healthcheck:
+      test: ["CMD", "bash", "-c", ":</dev/tcp/localhost/9083"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    hostname: spark-master
+    command:
+      [
+        "/opt/spark/bin/spark-class",
+        "org.apache.spark.deploy.master.Master"
+      ]
+    environment:
+      PYTHONPATH: /opt/project
+      PYSPARK_PYTHON: python3
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_MASTER_HOST: spark-master
+    ports:
+      - "7077:7077"
+      - "8081:8080"
+    working_dir: /opt/project
+    volumes:
+      - ./:/opt/project
+      - warehouse_data:/data/warehouse
+      - spark_checkpoints:/opt/project/.checkpoints
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080')"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+
+  spark-worker:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    command:
+      [
+        "/opt/spark/bin/spark-class",
+        "org.apache.spark.deploy.worker.Worker",
+        "spark://spark-master:7077"
+      ]
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /opt/project
+      PYSPARK_PYTHON: python3
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_WORKER_MEMORY: 2G
+      SPARK_WORKER_CORES: 2
+    ports:
+      - "8082:8081"
+    working_dir: /opt/project
+    volumes:
+      - ./:/opt/project
+      - warehouse_data:/data/warehouse
+      - spark_checkpoints:/opt/project/.checkpoints
+
+  spark-streaming-job:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+      hive-metastore:
+        condition: service_healthy
+    env_file:
+      - .env
+    command: /opt/spark/bin/spark-submit --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.sql.catalog.stock_catalog=org.apache.iceberg.spark.SparkCatalog --conf spark.sql.catalog.stock_catalog.type=hive --conf spark.sql.catalog.stock_catalog.uri=thrift://hive-metastore:9083 --conf spark.sql.catalog.stock_catalog.warehouse=file:///data/warehouse /opt/project/scripts/run_spark_streaming.py
+    environment:
+      PYTHONPATH: /opt/project
+      PYSPARK_PYTHON: python3
+      SPARK_MASTER_URL: spark://spark-master:7077
+    working_dir: /opt/project
+    volumes:
+      - ./:/opt/project
+      - warehouse_data:/data/warehouse
+      - spark_checkpoints:/opt/project/.checkpoints
+    restart: unless-stopped
+
+  stock-producer:
+    build:
+      context: .
+      dockerfile: docker/producer/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    env_file:
+      - .env
+    command: python3 /opt/project/scripts/run_producer.py
+    environment:
+      PYTHONPATH: /opt/project
+    working_dir: /opt/project
+    volumes:
+      - ./:/opt/project
+    restart: unless-stopped
+
+  trino:
+    build:
+      context: .
+      dockerfile: docker/trino/Dockerfile
+    depends_on:
+      hive-metastore:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./docker/trino/catalog/iceberg.properties:/etc/trino/catalog/iceberg.properties
+      - warehouse_data:/data/warehouse
+    healthcheck:
+      test: ["CMD", "bash", "-c", ":</dev/tcp/localhost/8080"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      trino:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://admin:admin@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: airflow-secret
+      PYTHONPATH: /opt/project
+    command: >
+      bash -c "
+      airflow db migrate &&
+      airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin || true &&
+      airflow webserver"
+    ports:
+      - "8088:8080"
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./:/opt/project
+      - ./interfaces/airflow/dags:/opt/airflow/dags
+      - airflow_data:/opt/airflow
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    depends_on:
+      airflow-webserver:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://admin:admin@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      PYTHONPATH: /opt/project
+    command: airflow scheduler
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./:/opt/project
+      - ./interfaces/airflow/dags:/opt/airflow/dags
+      - airflow_data:/opt/airflow
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "bash", "-c", "airflow jobs check --job-type SchedulerJob --hostname $$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  superset:
+    build:
+      context: .
+      dockerfile: docker/superset/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      trino:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://admin:admin@postgres:5432/superset
+    command: >
+      /bin/sh -c "
+      superset db upgrade &&
+      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@example.com --password admin || true &&
+      superset init &&
+      superset run -h 0.0.0.0 -p 8088"
+    ports:
+      - "8098:8088"
+    volumes:
+      - superset_home:/app/superset_home
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8088/health')"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+volumes:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+  postgres_data:
+  warehouse_data:
+  spark_checkpoints:
+  airflow_data:
+  superset_home:

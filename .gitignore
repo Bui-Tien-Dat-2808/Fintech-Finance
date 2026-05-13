@@ -1,0 +1,8 @@
+.env
+.pytest_cache/
+.checkpoints/
+__pycache__/
+*.pyc
+.vscode/
+metastore_db/
+derby.log

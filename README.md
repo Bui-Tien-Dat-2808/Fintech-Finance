@@ -1,45 +1,34 @@
 # Real-time Stock Data Streaming Pipeline
 
 ## Overview
-Project này xây dựng một pipeline streaming dữ liệu trade cổ phiếu theo hướng gần production. Dữ liệu real-time được ingest từ Finnhub WebSocket, đẩy vào Kafka, xử lý bằng PySpark Structured Streaming, lưu vào Apache Iceberg, query qua Trino và trực quan hóa bằng Superset. Airflow đảm nhiệm orchestration, còn toàn bộ Python code theo Clean Architecture.
+This project implements a near-production stock trade streaming pipeline.
+
+It ingests real-time trade events from the Finnhub WebSocket API, publishes them to Kafka, processes them with PySpark Structured Streaming, stores curated datasets in Apache Iceberg, serves analytical queries through Trino, and visualizes the results in Superset. Airflow is used for orchestration, while the Python codebase follows a Clean Architecture layout.
 
 ## Architecture
-```text
-Finnhub WebSocket
-        |
-        v
-Python Ingestion Service
-        |
-        v
-Kafka topic: stock_trades
-        |
-        v
-PySpark Structured Streaming
-        |
-        +--> Iceberg raw_stream_data
-        |
-        +--> 1-minute aggregation
-                |
-                v
-          Iceberg aggregated_data
-                |
-                v
-              Trino
-                |
-                v
-            Superset
-```
 
-## Project structure
+![Architecture Diagram](images/architecture.png)
+
+Primary flow:
+
+`Finnhub -> stock-producer -> Kafka -> spark-streaming-job -> Iceberg -> Trino -> Superset`
+
+Supporting services:
+
+- `Hive Metastore` stores Iceberg metadata.
+- `Postgres` backs the `metastore`, `airflow`, and `superset` databases.
+- `Airflow` bootstraps and operates the producer and Spark streaming job.
+
+## Project Structure
 ```text
 .
 |-- application/
 |-- domain/
 |-- infrastructure/
 |   |-- finnhub/
+|   |-- iceberg/
 |   |-- kafka/
-|   |-- spark/
-|   `-- iceberg/
+|   `-- spark/
 |-- interfaces/
 |   `-- airflow/
 |-- shared/
@@ -53,134 +42,162 @@ PySpark Structured Streaming
 `-- README.md
 ```
 
-## Clean Architecture mapping
-- `domain/`: entity và business rule cốt lõi cho trade event.
-- `application/`: orchestration service sử dụng các domain use case.
-- `infrastructure/`: adapter cho Finnhub, Kafka, Spark, Iceberg và Trino-related bootstrap.
-- `interfaces/airflow/`: DAG orchestration.
-- `shared/`: cấu hình môi trường và logging dùng chung.
+## Clean Architecture Mapping
+- `domain/`: core trade entities and business rules.
+- `application/`: orchestration logic built on top of domain use cases.
+- `infrastructure/`: concrete adapters for Finnhub, Kafka, Spark, Iceberg, and related runtime concerns.
+- `interfaces/airflow/`: Airflow DAGs used to operate the pipeline.
+- `shared/`: shared configuration and logging utilities.
 
-## Main components
-### 1. Ingestion service
-- Kết nối `wss://ws.finnhub.io`
-- Subscribe nhiều symbols từ `STOCK_SYMBOLS`
-- Parse payload trade về `TradeEvent`
-- Validate domain rule trước khi publish Kafka
-- Kafka producer dùng `acks=all`, retry và delivery callback
-- Logging cho connect, subscribe, delivery và reconnect
+## Main Components
 
-### 2. Spark streaming
-- Source: Kafka Structured Streaming
-- Parsing: JSON schema cố định
-- Cleaning:
-  - Drop null ở các field bắt buộc
-  - Filter `price > 0`
-  - Filter `volume >= 0`
-  - Convert timestamp sang Spark `timestamp`
-- Deduplication theo `symbol + trade_timestamp`
-- Watermark mặc định: `2 minutes`
-- Aggregation window: `1 minute`
-- Checkpointing tách riêng cho raw và aggregate writer
+### 1. Ingestion Service
+- Connects to `wss://ws.finnhub.io`
+- Subscribes to symbols from `STOCK_SYMBOLS`
+- Parses incoming payloads into `TradeEvent`
+- Validates domain rules before publishing
+- Produces to Kafka with retries and delivery callbacks
+- Logs connection, subscription, delivery, and reconnection events
 
-### 3. Iceberg + Trino + Superset
-- Catalog Spark: `stock_catalog`
+### 2. Spark Streaming Job
+- Reads from Kafka with Structured Streaming
+- Parses a fixed JSON schema
+- Cleans and validates records
+- Drops invalid rows for required fields
+- Filters `price > 0`
+- Filters `volume >= 0`
+- Converts the event time into Spark `timestamp`
+- Deduplicates by `symbol + trade_timestamp`
+- Applies a configurable watermark
+- Produces 1-minute aggregated metrics
+- Writes both raw and aggregated streams to Iceberg with separate checkpoints
+
+### 3. Iceberg, Hive Metastore, and Trino
+- Spark catalog: `stock_catalog`
+- Default namespace: `stock`
+- Hive Metastore URI: `thrift://hive-metastore:9083`
 - Trino catalog: `iceberg`
-- Tables:
-  - `stock_catalog.stock.raw_stream_data`
-  - `stock_catalog.stock.aggregated_data`
-- Partition:
-  - Raw: `days(trade_timestamp), symbol`
-  - Aggregate: `days(window_start), symbol`
-- Shared warehouse path giữa Spark, Hive và Trino: `/data/warehouse`
+- Shared warehouse path: `/data/warehouse`
 
-### 4. Airflow orchestration
+Tables created by the streaming job:
+
+- `stock_catalog.stock.raw_stream_data`
+- `stock_catalog.stock.aggregated_data`
+
+Table layout:
+
+- Raw table partitioning: `days(trade_timestamp), symbol`
+- Aggregated table partitioning: `days(window_start), symbol`
+
+### 4. Airflow Orchestration
+Available DAGs:
+
 - `stock_pipeline_start`
-  - check dependencies
-  - ensure Kafka topic
-  - ensure Iceberg namespace/tables
-  - start Spark job container
-  - start producer container
 - `stock_pipeline_monitor`
-  - chạy health check định kỳ
 - `stock_pipeline_stop`
-  - dừng producer và Spark job
 
-## Environment variables
-Copy file mẫu:
+Typical responsibilities:
+
+- verify service dependencies
+- bootstrap the Kafka topic
+- bootstrap the Iceberg namespace and tables
+- start the Spark streaming container
+- start the producer container
+- run periodic health checks
+
+## Environment Variables
+Copy the example file first:
 
 ```bash
 cp .env.example .env
 ```
 
-Điền tối thiểu:
+Minimum required values:
+
 - `FINNHUB_API_KEY`
 - `STOCK_SYMBOLS`
 - `SUPERSET_SECRET_KEY`
 
-Các biến quan trọng khác:
+Important runtime variables:
+
 - `KAFKA_BROKER`
 - `KAFKA_TOPIC`
+- `SPARK_APP_NAME`
+- `SPARK_MASTER_URL`
 - `SPARK_CHECKPOINT_ROOT`
+- `SPARK_WATERMARK_DELAY`
+- `SPARK_MAX_OFFSETS_PER_TRIGGER`
 - `ICEBERG_CATALOG_NAME`
+- `ICEBERG_NAMESPACE`
 - `ICEBERG_WAREHOUSE`
 - `HIVE_METASTORE_URI`
 - `TRINO_HOST`
 - `TRINO_PORT`
+- `TRINO_CATALOG`
+- `TRINO_SCHEMA`
 
-## How to run
-### 1. Start platform services
+## How to Run
+
+### 1. Start the Full Platform
 ```bash
 docker compose up --build -d
 ```
 
-Nếu muốn chỉ khởi động hạ tầng trước:
-
+### 2. Start Only the Infrastructure Layer
 ```bash
 docker compose up -d zookeeper kafka postgres hive-metastore spark-master spark-worker trino airflow-webserver airflow-scheduler superset
 ```
 
-### 2. Bootstrap manually
+### 3. Bootstrap Kafka and Iceberg Manually
 ```bash
 docker compose run --rm stock-producer python3 scripts/bootstrap_kafka_topic.py
 docker compose run --rm spark-streaming-job /opt/spark/bin/spark-submit --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 /opt/project/scripts/bootstrap_iceberg.py
 ```
 
-### 3. Start streaming jobs
+### 4. Start the Streaming Workloads
 ```bash
 docker compose up -d stock-producer spark-streaming-job
 ```
 
-### 4. Orchestrate with Airflow
-Sau khi Airflow UI sẵn sàng, dùng DAG theo thứ tự:
-- chạy `stock_pipeline_start` để bootstrap và start pipeline
-- dùng `stock_pipeline_monitor` để theo dõi health
-- chỉ chạy `stock_pipeline_stop` khi muốn dừng `stock-producer` và `spark-streaming-job`
+### 5. Operate the Pipeline with Airflow
+After the Airflow UI is available:
 
-Không chạy `stock_pipeline_start` và `stock_pipeline_stop` cùng lúc.
+- run `stock_pipeline_start` to bootstrap and start the pipeline
+- use `stock_pipeline_monitor` for periodic health checks
+- run `stock_pipeline_stop` only when you want to stop `stock-producer` and `spark-streaming-job`
 
-### 5. Open UIs
+Do not run `stock_pipeline_start` and `stock_pipeline_stop` at the same time.
+
+## Service Endpoints
 - Airflow: `http://localhost:8088`
 - Superset: `http://localhost:8098`
 - Spark Master UI: `http://localhost:8081`
 - Trino UI: `http://localhost:8080`
+- Postgres: `localhost:5432`
+- Kafka: `localhost:9092` and `localhost:29092`
 
 Default local credentials:
+
 - Airflow: `admin / admin`
 - Superset: `admin / admin`
 
-## Superset setup
-Tạo database connection trong Superset bằng SQLAlchemy URI:
+## Superset Setup
+Create a database connection in Superset using this SQLAlchemy URI:
 
 ```text
 trino://trino@trino:8080/iceberg/stock
 ```
 
-Sau đó tạo các chart gợi ý:
-- Real-time price chart theo `trade_timestamp`
-- Average price theo `window_start`
-- Top active stocks theo `trade_count` hoặc `total_volume`
+Recommended charts:
 
-## Example queries
+- line chart for real-time price by `trade_timestamp`
+- line chart for 1-minute `avg_price` by `window_start`
+- bar chart for `total_volume` by `symbol`
+- big number for total trade count
+- heatmap for activity by `symbol` and time bucket
+
+## Example Queries
+
 Raw stream:
 
 ```sql
@@ -193,7 +210,15 @@ LIMIT 20;
 Aggregated metrics:
 
 ```sql
-SELECT symbol, window_start, avg_price, total_volume, trade_count
+SELECT
+    symbol,
+    window_start,
+    window_end,
+    avg_price,
+    min_price,
+    max_price,
+    total_volume,
+    trade_count
 FROM iceberg.stock.aggregated_data
 ORDER BY window_start DESC
 LIMIT 50;
@@ -211,30 +236,70 @@ SELECT count(*) AS aggregated_count
 FROM iceberg.stock.aggregated_data;
 ```
 
+## How to Verify Data Is Flowing
+
+### Check the Producer
+```bash
+docker logs -f fintechfinance-stock-producer-1
+```
+
+### Check the Kafka Topic
+```bash
+docker exec -it fintechfinance-kafka-1 kafka-console-consumer \
+  --bootstrap-server localhost:9092 \
+  --topic stock_trades \
+  --from-beginning \
+  --max-messages 10
+```
+
+### Check the Spark Streaming Job
+```bash
+docker logs -f fintechfinance-spark-streaming-job-1
+```
+
+### Check Data in Trino
+```bash
+docker exec -it fintechfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.raw_stream_data"
+docker exec -it fintechfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.aggregated_data"
+```
+
 ## Testing
-Chạy unit và integration tests:
+Run unit and integration tests:
 
 ```bash
 pytest tests/unit
 pytest tests/integration
 ```
 
-## Reliability notes
-- Kafka offset management được Spark quản lý qua checkpoint.
-- WebSocket client có reconnect loop và resubscribe.
-- `maxOffsetsPerTrigger` giúp hạn chế burst load.
-- Watermark xử lý late data trong phạm vi cấu hình.
-- Iceberg table dùng format version 2 để sẵn sàng cho schema evolution cơ bản.
-- `IcebergTableManager` có logic recover khi metastore còn stale metadata nhưng file metadata Iceberg đã mất.
+## Reliability Notes
+- Spark manages Kafka offsets through checkpointing.
+- The WebSocket client includes reconnect and resubscribe logic.
+- `maxOffsetsPerTrigger` helps control burst ingestion.
+- Watermarking handles late events within the configured delay.
+- Iceberg tables use format version `2`.
+- `IcebergTableManager` can recover from stale Iceberg metadata by recreating table metadata when required.
+
+## Visualization
+
+### Transaction History
+![Transaction History](images/image.jpg)
+
+### Trading Volume
+![Trading Volume](images/image-2.jpg)
+
+### Volume Comparison
+![Volume Comparison](images/image-1.jpg)
 
 ## Troubleshooting
-### Query không có dữ liệu
-Kiểm tra theo thứ tự:
-- `stock-producer` có log delivery thành công vào Kafka
-- `spark-streaming-job` không bị crash và có ghi raw/aggregate stream
-- Trino query `count(*)` trên cả hai bảng không còn bằng `0`
 
-Một số lệnh hữu ích:
+### No Data Appears in Queries
+Check in this order:
+
+- `stock-producer` logs show successful delivery to Kafka
+- `spark-streaming-job` is running and writing batches
+- Trino `count(*)` queries against both Iceberg tables return non-zero values
+
+Useful commands:
 
 ```bash
 docker logs fintechfinance-stock-producer-1 --tail 100
@@ -243,8 +308,30 @@ docker exec -it fintechfinance-trino-1 trino --execute "SELECT count(*) FROM ice
 docker exec -it fintechfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.aggregated_data"
 ```
 
-### Kafka bị lệch cluster ID
-Nếu Kafka báo `InconsistentClusterIdException`, reset riêng volume Kafka:
+### `hive-metastore` Fails with `exec /entrypoint.sh: no such file or directory`
+This usually means a shell script was saved with Windows `CRLF` line endings.
+
+This repository includes:
+
+- `.gitattributes` with `*.sh text eol=lf`
+
+If the image was already built before the fix, rebuild it:
+
+```bash
+docker compose up -d --build hive-metastore
+```
+
+### `metastore`, `airflow`, or `superset` Databases Are Missing
+If Postgres uses an existing volume, the initialization scripts in `docker-entrypoint-initdb.d/` do not run again. In that case, create the missing databases manually or recreate the Postgres volume.
+
+Manual creation example:
+
+```bash
+docker exec fintechfinance-postgres-1 psql -U admin -d postgres -c "CREATE DATABASE airflow;" -c "CREATE DATABASE metastore;" -c "CREATE DATABASE superset;"
+```
+
+### Kafka Reports `InconsistentClusterIdException`
+Reset the Kafka volume only:
 
 ```bash
 docker compose down
@@ -252,18 +339,18 @@ docker volume rm fintechfinance_kafka_data
 docker compose up -d zookeeper kafka
 ```
 
-### Docker Desktop hoặc WSL thiếu tài nguyên
-Nếu build hoặc Spark job hay chết bất thường, tăng memory cho WSL/Docker Desktop trước khi chạy lại stack.
+### Docker Desktop or WSL Runs Out of Resources
+If builds fail or Spark exits unexpectedly, increase Docker Desktop or WSL memory before starting the stack again.
 
-## Manual validation checklist
-- Producer log cho thấy WebSocket connected và subscribed đúng symbols.
-- Kafka topic `stock_trades` có offset tăng.
-- Spark log cho thấy raw writer và aggregated writer đã start.
-- Truy vấn Trino trả về dữ liệu ở cả `raw_stream_data` và `aggregated_data`.
-- Dashboard Superset render được các biểu đồ chính.
+## Manual Validation Checklist
+- Producer logs show a successful WebSocket connection and symbol subscriptions.
+- Kafka topic `stock_trades` is receiving messages.
+- Spark logs show that both raw and aggregated writers are active.
+- Trino queries return rows from `raw_stream_data` and `aggregated_data`.
+- Superset dashboards render charts successfully.
 
-## Future improvements
-- Thêm metrics exporter cho Prometheus/Grafana.
-- Thêm dead-letter topic cho malformed events.
-- Thêm CI pipeline và data quality checks.
-- Thêm automated end-to-end integration test bằng Testcontainers.
+## Future Improvements
+- Add Prometheus and Grafana metrics.
+- Add a dead-letter topic for malformed events.
+- Add CI and data quality checks.
+- Add automated end-to-end tests with Testcontainers.

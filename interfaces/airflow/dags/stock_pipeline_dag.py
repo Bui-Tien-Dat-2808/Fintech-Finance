@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from airflow import DAG
@@ -8,7 +9,7 @@ from airflow.operators.bash import BashOperator
 
 PROJECT_DIR = "/opt/project"
 COMPOSE_FILE = f"{PROJECT_DIR}/docker-compose.yaml"
-PROJECT_NAME = "fintechfinance"
+PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "finnhubfinance")
 
 
 with DAG(

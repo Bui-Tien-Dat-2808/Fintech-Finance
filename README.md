@@ -4,6 +4,7 @@
 This project implements a near-production stock trade streaming pipeline.
 
 It ingests real-time trade events from the Finnhub WebSocket API, publishes them to Kafka, processes them with PySpark Structured Streaming, stores curated datasets in Apache Iceberg, serves analytical queries through Trino, and visualizes the results in Superset. Airflow is used for orchestration, while the Python codebase follows a Clean Architecture layout.
+It ingests real-time trade events from the Finnhub WebSocket API, publishes them to Kafka, processes them with PySpark Structured Streaming, stores curated datasets in Apache Iceberg, serves analytical queries through Trino, and visualizes the results in Superset. Airflow is used for orchestration, while the Python codebase follows a Clean Architecture layout.
 
 ## Architecture
 
@@ -17,6 +18,7 @@ Supporting services:
 
 - `Hive Metastore` stores Iceberg metadata.
 - `Postgres` backs the `metastore`, `airflow`, and `superset` databases.
+- `Airflow` bootstraps and operates the producer and Spark streaming job.
 - `Airflow` bootstraps and operates the producer and Spark streaming job.
 
 ## Project Structure
@@ -148,18 +150,12 @@ docker compose up --build -d
 docker compose up -d zookeeper kafka postgres hive-metastore spark-master spark-worker trino airflow-webserver airflow-scheduler superset
 ```
 
-### 3. Bootstrap Kafka and Iceberg Manually
+### 3. Bootstrap Kafka
 ```bash
 docker compose run --rm stock-producer python3 scripts/bootstrap_kafka_topic.py
-docker compose run --rm spark-streaming-job /opt/spark/bin/spark-submit --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 /opt/project/scripts/bootstrap_iceberg.py
 ```
 
-### 4. Start the Streaming Workloads
-```bash
-docker compose up -d stock-producer spark-streaming-job
-```
-
-### 5. Operate the Pipeline with Airflow
+### 4. Operate the Pipeline with Airflow
 After the Airflow UI is available:
 
 - run `stock_pipeline_start` to bootstrap and start the pipeline
@@ -240,12 +236,12 @@ FROM iceberg.stock.aggregated_data;
 
 ### Check the Producer
 ```bash
-docker logs -f fintechfinance-stock-producer-1
+docker logs -f finnhubfinance-stock-producer-1
 ```
 
 ### Check the Kafka Topic
 ```bash
-docker exec -it fintechfinance-kafka-1 kafka-console-consumer \
+docker exec -it finnhubfinance-kafka-1 kafka-console-consumer \
   --bootstrap-server localhost:9092 \
   --topic stock_trades \
   --from-beginning \
@@ -254,13 +250,13 @@ docker exec -it fintechfinance-kafka-1 kafka-console-consumer \
 
 ### Check the Spark Streaming Job
 ```bash
-docker logs -f fintechfinance-spark-streaming-job-1
+docker logs -f finnhubfinance-spark-streaming-job-1
 ```
 
 ### Check Data in Trino
 ```bash
-docker exec -it fintechfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.raw_stream_data"
-docker exec -it fintechfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.aggregated_data"
+docker exec -it finnhubfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.raw_stream_data"
+docker exec -it finnhubfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.aggregated_data"
 ```
 
 ## Testing
@@ -302,10 +298,10 @@ Check in this order:
 Useful commands:
 
 ```bash
-docker logs fintechfinance-stock-producer-1 --tail 100
-docker logs fintechfinance-spark-streaming-job-1 --tail 100
-docker exec -it fintechfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.raw_stream_data"
-docker exec -it fintechfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.aggregated_data"
+docker logs finnhubfinance-stock-producer-1 --tail 100
+docker logs finnhubfinance-spark-streaming-job-1 --tail 100
+docker exec -it finnhubfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.raw_stream_data"
+docker exec -it finnhubfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.aggregated_data"
 ```
 
 ### `hive-metastore` Fails with `exec /entrypoint.sh: no such file or directory`
@@ -327,7 +323,7 @@ If Postgres uses an existing volume, the initialization scripts in `docker-entry
 Manual creation example:
 
 ```bash
-docker exec fintechfinance-postgres-1 psql -U admin -d postgres -c "CREATE DATABASE airflow;" -c "CREATE DATABASE metastore;" -c "CREATE DATABASE superset;"
+docker exec finnhubfinance-postgres-1 psql -U admin -d postgres -c "CREATE DATABASE airflow;" -c "CREATE DATABASE metastore;" -c "CREATE DATABASE superset;"
 ```
 
 ### Kafka Reports `InconsistentClusterIdException`
@@ -335,7 +331,7 @@ Reset the Kafka volume only:
 
 ```bash
 docker compose down
-docker volume rm fintechfinance_kafka_data
+docker volume rm finnhubfinance_kafka_data
 docker compose up -d zookeeper kafka
 ```
 

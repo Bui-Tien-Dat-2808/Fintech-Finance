@@ -38,13 +38,19 @@ with DAG(
 
     ensure_iceberg_tables = BashOperator(
         task_id="ensure_iceberg_tables",
-        bash_command=(
-            f"cd {PROJECT_DIR} && "
-            f"docker compose -p {PROJECT_NAME} exec -T spark-master "
-            "/opt/spark/bin/spark-submit --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 --conf spark.sql.catalog.stock_catalog=org.apache.iceberg.spark.SparkCatalog --conf spark.sql.catalog.stock_catalog.type=hive --conf spark.sql.catalog.stock_catalog.uri=thrift://hive-metastore:9083 --conf spark.sql.catalog.stock_catalog.warehouse=file:///data/warehouse scripts/bootstrap_iceberg.py"
-        ),
+        bash_command=f"""
+            cd {PROJECT_DIR} && \\
+            docker compose -p {PROJECT_NAME} exec -T spark-master \\
+            /opt/spark/bin/spark-submit \\
+                --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \\
+                --conf spark.sql.catalog.stock_catalog=org.apache.iceberg.spark.SparkCatalog \\
+                --conf spark.sql.catalog.stock_catalog.type=hive \\
+                --conf spark.sql.catalog.stock_catalog.uri=thrift://hive-metastore:9083 \\
+                --conf spark.sql.catalog.stock_catalog.warehouse=file:///data/warehouse \\
+                scripts/bootstrap_iceberg.py
+        """,
     )
-
+    
     start_spark_job = BashOperator(
         task_id="start_spark_job",
         bash_command=(

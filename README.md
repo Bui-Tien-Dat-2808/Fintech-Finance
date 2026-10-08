@@ -267,15 +267,27 @@ When running locally, stopping the host machine terminates the Docker daemon. To
    ```
 3. The platform will run autonomously around the clock, continuously streaming market data and executing Airflow maintenance workflows.
 
----
+## 💼 CV Descriptions & Portfolio Highlights
 
-## 💼 CV Bullet Points (Optimized for Senior Recruiter & Hiring Manager)
+### Format A: Concise 1-Page Resume Format (Matches PDF Layout)
+```markdown
+Real-Time Stock Data Lakehouse                               Mar 2026 - Apr 2026
 
-> **Real-Time Financial Streaming Lakehouse Platform**
-> *Tech Stack: Apache Iceberg, MinIO (S3), PySpark Structured Streaming, Apache Kafka, Trino, Apache Airflow, Docker, Python.*
-> - **Architecture & Storage**: Engineered an end-to-end Medallion Lakehouse platform ingesting live trade events from Finnhub WebSocket; implemented Apache Iceberg v2 open table format on MinIO S3 object storage with Hive Metastore catalog, enabling ACID transactions and schema evolution.
+• Description: Designed and built an end-to-end Medallion Lakehouse streaming platform ingesting real-time stock trades from Finnhub WebSocket into Apache Iceberg on MinIO S3 object storage using PySpark Structured Streaming.
+
+• Tech stack: Python, Apache Iceberg, MinIO (S3), PySpark, Apache Kafka, Trino, Apache Airflow, Apache Superset, Docker.
+
+• Outcome: Delivered a sub-second financial streaming platform computing real-time OHLCV and VWAP metrics, featuring a Kafka Dead Letter Queue (DLQ) for zero data loss, automated Airflow lakehouse compaction, and an interactive Superset trading dashboard.
+
+• Project link: https://github.com/Bui-Tien-Dat-2808/Fintech-Finance
+```
+
+### Format B: Detailed Bullet Points (For 2-Page CVs, Portfolio & LinkedIn)
+> **Real-Time Financial Streaming Lakehouse Platform** *(Mar 2026 – Apr 2026)*  
+> *Tech Stack: Apache Iceberg, MinIO (S3), PySpark, Apache Kafka, Trino, Apache Airflow, Apache Superset, Docker, Pytest, Python.*  
+> - **Architecture & Storage**: Engineered an end-to-end Medallion Lakehouse platform ingesting live trade events from Finnhub WebSocket; implemented Apache Iceberg v2 open table format on MinIO S3 object storage with Hive Metastore catalog, enabling ACID transactions, hidden partitioning, and schema evolution.
 > - **Streaming & Financial Analytics**: Built PySpark Structured Streaming jobs with event-time watermarking and 1-minute tumbling windows; computed quantitative trading indicators including OHLCV candlesticks and Volume-Weighted Average Price (VWAP) with sub-second latency.
 > - **Resilience & Fault Tolerance**: Designed an idempotent Kafka producer with a Dead Letter Queue (DLQ) pattern, automatically isolating malformed ticks and preventing data corruption with zero silent drops.
 > - **Anomaly Detection**: Developed real-time rule-based anomaly detection streaming filters to flag institutional large block trades ($\ge 50,000$ shares) and price dislocation events into a dedicated Iceberg Gold table.
-> - **Orchestration & Data Quality**: Orchestrated 4 production Airflow DAGs automating Iceberg table maintenance (small-file compaction, snapshot expiration, orphan file cleanup), Finnhub REST dimension synchronization, and continuous data quality invariant assertions.
-> - **Serving & Visualization**: Integrated Trino distributed SQL query engine with Apache Superset to deliver real-time interactive dashboards with auto-refreshing financial KPIs.
+> - **Orchestration & Data Quality**: Orchestrated 4 production Airflow DAGs automating Iceberg table maintenance (small-file compaction, snapshot expiration, orphan file cleanup), Finnhub REST dimension synchronization (Star-Schema), and continuous data quality invariant assertions.
+> - **Serving & Visualization**: Integrated Trino distributed SQL query engine with Apache Superset to deliver real-time interactive dashboards with 10-second auto-refreshing financial KPIs.

@@ -5,13 +5,14 @@ from typing import Any
 
 from confluent_kafka import Producer
 
+from domain.entities.dead_letter import DeadLetterEvent
 from domain.entities.trade_event import TradeEvent
 from shared.config.settings import Settings
 from shared.logging.logger import get_logger
 
 
 class KafkaTradeProducer:
-    """Publishes normalized trade events to Kafka."""
+    """Publishes normalized trade events and dead letter events to Kafka."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -38,6 +39,18 @@ class KafkaTradeProducer:
         )
         self._producer.poll(0)
 
+    def publish_dead_letter(self, dead_letter: DeadLetterEvent) -> None:
+        """Publishes rejected or unparseable messages to the Dead Letter Queue."""
+        message_key = b"dlq-error"
+        message_value = json.dumps(dead_letter.to_dict()).encode("utf-8")
+        self._producer.produce(
+            self._settings.kafka_dlq_topic,
+            key=message_key,
+            value=message_value,
+            on_delivery=self._dlq_delivery_callback,
+        )
+        self._producer.poll(0)
+
     def close(self) -> None:
         self._logger.info("Flushing Kafka producer.")
         self._producer.flush(self._settings.kafka_flush_timeout_seconds)
@@ -47,10 +60,22 @@ class KafkaTradeProducer:
             self._logger.error("Kafka delivery failed: %s", error)
             return
 
-        self._logger.info(
+        self._logger.debug(
             "Kafka message delivered. topic=%s partition=%s offset=%s key=%s",
             message.topic(),
             message.partition(),
             message.offset(),
-            message.key().decode("utf-8"),
+            message.key().decode("utf-8") if message.key() else "",
+        )
+
+    def _dlq_delivery_callback(self, error: Exception | None, message: Any) -> None:
+        if error is not None:
+            self._logger.error("DLQ delivery failed: %s", error)
+            return
+
+        self._logger.warning(
+            "DLQ message delivered. topic=%s partition=%s offset=%s",
+            message.topic(),
+            message.partition(),
+            message.offset(),
         )

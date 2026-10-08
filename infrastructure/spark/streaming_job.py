@@ -11,7 +11,7 @@ from shared.logging.logger import get_logger
 
 
 class StockStreamingJob:
-    """Coordinates Spark structured streaming from Kafka to Iceberg."""
+    """Coordinates Spark structured streaming from Kafka to Iceberg Medallion layers."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -33,13 +33,15 @@ class StockStreamingJob:
             self._settings.spark_watermark_delay,
         )
         aggregated_df = TradeAggregator.aggregate_1m(clean_df)
+        anomalies_df = TradeStreamTransformer.extract_anomalies(clean_df)
 
         queries = [
             writer.write_raw(clean_df),
             writer.write_aggregated(aggregated_df),
+            writer.write_anomalies(anomalies_df),
         ]
 
-        self._logger.info("Spark structured streaming job started.")
+        self._logger.info("Spark structured streaming job started with raw, aggregated, and anomaly streams.")
         try:
             spark.streams.awaitAnyTermination()
         finally:

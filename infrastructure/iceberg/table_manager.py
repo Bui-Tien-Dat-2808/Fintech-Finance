@@ -8,7 +8,7 @@ from shared.logging.logger import get_logger
 
 
 class IcebergTableManager:
-    """Creates schema and tables required by the streaming pipeline."""
+    """Creates schema and tables required by the Medallion Lakehouse streaming pipeline."""
 
     def __init__(self, settings: Settings, spark: SparkSession) -> None:
         self._settings = settings
@@ -25,6 +25,7 @@ class IcebergTableManager:
         catalog = self._settings.iceberg_catalog_name
         namespace = self._settings.iceberg_namespace
 
+        # 1. Silver Raw Trades
         raw_table_name = f"{catalog}.{namespace}.raw_stream_data"
         raw_table_ddl = f"""
         CREATE TABLE IF NOT EXISTS {raw_table_name} (
@@ -44,15 +45,19 @@ class IcebergTableManager:
         )
         """
 
+        # 2. Gold Candlesticks (OHLCV + VWAP)
         aggregated_table_name = f"{catalog}.{namespace}.aggregated_data"
         aggregated_table_ddl = f"""
         CREATE TABLE IF NOT EXISTS {aggregated_table_name} (
             symbol STRING,
             window_start TIMESTAMP,
             window_end TIMESTAMP,
+            open_price DOUBLE,
+            high_price DOUBLE,
+            low_price DOUBLE,
+            close_price DOUBLE,
             avg_price DOUBLE,
-            min_price DOUBLE,
-            max_price DOUBLE,
+            vwap DOUBLE,
             total_volume BIGINT,
             trade_count BIGINT,
             trade_date DATE
@@ -65,9 +70,52 @@ class IcebergTableManager:
         )
         """
 
+        # 3. Gold Market Anomalies (Block trades, price spikes)
+        anomalies_table_name = f"{catalog}.{namespace}.market_anomalies"
+        anomalies_table_ddl = f"""
+        CREATE TABLE IF NOT EXISTS {anomalies_table_name} (
+            symbol STRING,
+            trade_timestamp TIMESTAMP,
+            price DOUBLE,
+            volume BIGINT,
+            anomaly_type STRING,
+            description STRING,
+            severity STRING,
+            trade_date DATE
+        )
+        USING iceberg
+        PARTITIONED BY (days(trade_timestamp), symbol)
+        TBLPROPERTIES (
+            'format-version' = '2',
+            'write.distribution-mode' = 'hash'
+        )
+        """
+
+        # 4. Dimension Company Reference Table
+        dim_company_table_name = f"{catalog}.{namespace}.dim_company"
+        dim_company_ddl = f"""
+        CREATE TABLE IF NOT EXISTS {dim_company_table_name} (
+            symbol STRING,
+            company_name STRING,
+            country STRING,
+            currency STRING,
+            exchange STRING,
+            ipo_date STRING,
+            market_capitalization DOUBLE,
+            finnhub_industry STRING,
+            updated_at TIMESTAMP
+        )
+        USING iceberg
+        TBLPROPERTIES (
+            'format-version' = '2'
+        )
+        """
+
         self._ensure_table(raw_table_name, raw_table_ddl)
         self._ensure_table(aggregated_table_name, aggregated_table_ddl)
-        self._logger.info("Iceberg tables ensured in namespace=%s", namespace)
+        self._ensure_table(anomalies_table_name, anomalies_table_ddl)
+        self._ensure_table(dim_company_table_name, dim_company_ddl)
+        self._logger.info("All Iceberg Medallion tables ensured in namespace=%s", namespace)
 
     def _ensure_table(self, table_name: str, ddl: str) -> None:
         try:

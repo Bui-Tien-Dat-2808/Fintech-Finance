@@ -2,14 +2,10 @@ FROM apache/hive:4.0.0
 
 USER root
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fSL https://jdbc.postgresql.org/download/postgresql-42.7.3.jar \
-    -o /opt/hive/lib/postgresql-42.7.3.jar \
-    && chmod 644 /opt/hive/lib/postgresql-42.7.3.jar
+ADD https://jdbc.postgresql.org/download/postgresql-42.7.3.jar /opt/hive/lib/postgresql-42.7.3.jar
+RUN chmod 644 /opt/hive/lib/postgresql-42.7.3.jar && \
+    cp /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-*.jar /opt/hive/lib/ && \
+    cp /opt/hadoop/share/hadoop/tools/lib/aws-java-sdk-bundle-*.jar /opt/hive/lib/
 
 COPY docker/hive/hive-site.xml /opt/hive/conf/hive-site.xml
 COPY docker/hive/entrypoint.sh /entrypoint.sh

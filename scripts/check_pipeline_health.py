@@ -18,6 +18,14 @@ def _parse_broker_endpoint(broker: str) -> tuple[str, int]:
     return host, int(port)
 
 
+def _parse_url_endpoint(url: str, default_port: int = 80) -> tuple[str, int]:
+    clean = url.replace("http://", "").replace("https://", "").split("/")[0]
+    if ":" in clean:
+        h, p = clean.split(":")
+        return h, int(p)
+    return clean, default_port
+
+
 def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings)
@@ -26,16 +34,21 @@ def main() -> None:
     kafka_host, kafka_port = _parse_broker_endpoint(settings.kafka_broker)
     kafka_ok = _check_socket(kafka_host, kafka_port)
     trino_ok = _check_socket(settings.trino_host, settings.trino_port)
+
+    minio_host, minio_port = _parse_url_endpoint(settings.s3_endpoint, 9000)
+    minio_ok = _check_socket(minio_host, minio_port)
+
     checkpoint_ok = PipelineHealthService(settings).checkpoints_exist()
 
     logger.info(
-        "Pipeline health status kafka_ok=%s trino_ok=%s checkpoint_ok=%s",
+        "Pipeline health status: kafka_ok=%s trino_ok=%s minio_ok=%s checkpoint_ok=%s",
         kafka_ok,
         trino_ok,
+        minio_ok,
         checkpoint_ok,
     )
 
-    if not all([kafka_ok, trino_ok, checkpoint_ok]):
+    if not all([kafka_ok, trino_ok, minio_ok, checkpoint_ok]):
         raise SystemExit(1)
 
 

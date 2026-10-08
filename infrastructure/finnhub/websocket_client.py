@@ -13,15 +13,17 @@ from shared.logging.logger import get_logger
 
 
 class FinnhubWebSocketClient:
-    """Handles WebSocket lifecycle and automatic resubscription."""
+    """Handles WebSocket lifecycle, automatic resubscription, and error routing."""
 
     def __init__(
         self,
         settings: Settings,
         trade_handler: Callable[[TradeEvent], None],
+        error_handler: Callable[[str, str], None] | None = None,
     ) -> None:
         self._settings = settings
         self._trade_handler = trade_handler
+        self._error_handler = error_handler
         self._logger = get_logger(self.__class__.__name__)
         self._should_run = True
         self._websocket_app: WebSocketApp | None = None
@@ -87,10 +89,19 @@ class FinnhubWebSocketClient:
         self.subscribe(self._settings.stock_symbols)
 
     def _on_message(self, ws: WebSocketApp, message: str) -> None:
-        parsed = json.loads(message)
+        try:
+            parsed = json.loads(message)
+        except Exception as exc:
+            self._logger.warning("Failed to decode JSON from websocket: %s", exc)
+            if self._error_handler:
+                self._error_handler(message, f"JSON_DECODE_ERROR: {exc}")
+            return
+
         trades = FinnhubMessageParser.parse(parsed)
         if not trades and parsed.get("type") == "trade":
             self._logger.warning("Dropped malformed trade payload: %s", parsed)
+            if self._error_handler:
+                self._error_handler(message, "MALFORMED_TRADE_SCHEMA")
 
         for trade in trades:
             self._trade_handler(trade)

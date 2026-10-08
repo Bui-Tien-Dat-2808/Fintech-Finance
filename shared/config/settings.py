@@ -19,8 +19,10 @@ def _read_env(name: str, default: str | None = None, required: bool = False) -> 
 class Settings:
     finnhub_api_key: str
     finnhub_websocket_url: str
+    finnhub_rest_url: str
     kafka_broker: str
     kafka_topic: str
+    kafka_dlq_topic: str
     kafka_client_id: str
     kafka_topic_partitions: int
     kafka_topic_replication_factor: int
@@ -39,6 +41,10 @@ class Settings:
     iceberg_namespace: str
     iceberg_warehouse: str
     hive_metastore_uri: str
+    s3_endpoint: str
+    s3_access_key: str
+    s3_secret_key: str
+    s3_bucket: str
     trino_host: str
     trino_port: int
     trino_catalog: str
@@ -56,8 +62,13 @@ class Settings:
                 "FINNHUB_WEBSOCKET_URL",
                 "wss://ws.finnhub.io",
             ),
+            finnhub_rest_url=_read_env(
+                "FINNHUB_REST_URL",
+                "https://finnhub.io/api/v1",
+            ),
             kafka_broker=_read_env("KAFKA_BROKER", "kafka:9092"),
             kafka_topic=_read_env("KAFKA_TOPIC", "stock_trades"),
+            kafka_dlq_topic=_read_env("KAFKA_DLQ_TOPIC", "stock_trades_dlq"),
             kafka_client_id=_read_env("KAFKA_CLIENT_ID", "stock-trade-producer"),
             kafka_topic_partitions=int(_read_env("KAFKA_TOPIC_PARTITIONS", "3")),
             kafka_topic_replication_factor=int(
@@ -89,12 +100,16 @@ class Settings:
             iceberg_namespace=_read_env("ICEBERG_NAMESPACE", "stock"),
             iceberg_warehouse=_read_env(
                 "ICEBERG_WAREHOUSE",
-                "file:///data/warehouse",
+                "s3a://warehouse/stock",
             ),
             hive_metastore_uri=_read_env(
                 "HIVE_METASTORE_URI",
                 "thrift://hive-metastore:9083",
             ),
+            s3_endpoint=_read_env("S3_ENDPOINT", "http://minio:9000"),
+            s3_access_key=_read_env("S3_ACCESS_KEY", "admin"),
+            s3_secret_key=_read_env("S3_SECRET_KEY", "admin12345"),
+            s3_bucket=_read_env("S3_BUCKET", "warehouse"),
             trino_host=_read_env("TRINO_HOST", "trino"),
             trino_port=int(_read_env("TRINO_PORT", "8080")),
             trino_catalog=_read_env("TRINO_CATALOG", "iceberg"),

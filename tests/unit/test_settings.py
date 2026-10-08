@@ -10,3 +10,6 @@ def test_settings_from_env(monkeypatch) -> None:
     assert settings.finnhub_api_key == "test-key"
     assert settings.stock_symbols == ["AAPL", "MSFT"]
     assert settings.kafka_topic == "stock_trades"
+    assert settings.kafka_dlq_topic == "stock_trades_dlq"
+    assert settings.s3_endpoint == "http://minio:9000"
+    assert settings.s3_bucket == "warehouse"

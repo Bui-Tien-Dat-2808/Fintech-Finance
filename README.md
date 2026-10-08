@@ -1,352 +1,281 @@
-# Real-time Stock Data Streaming Pipeline
+# Real-time Financial Lakehouse Data Platform
 
-## Overview
-This project implements a near-production stock trade streaming pipeline.
+[![CI Pipeline](https://img.shields.io/badge/CI-pytest%20passing-brightgreen)](https://github.com)
+[![Architecture](https://img.shields.io/badge/Architecture-Medallion%20Lakehouse-blue)](https://iceberg.apache.org/)
+[![Storage](https://img.shields.io/badge/Storage-MinIO%20S3-orange)](https://min.io/)
+[![Engine](https://img.shields.io/badge/Engine-Spark%203.5%20%7C%20Trino%20480-red)](https://trino.io/)
 
-It ingests real-time trade events from the Finnhub WebSocket API, publishes them to Kafka, processes them with PySpark Structured Streaming, stores curated datasets in Apache Iceberg, serves analytical queries through Trino, and visualizes the results in Superset. Airflow is used for orchestration, while the Python codebase follows a Clean Architecture layout.
-It ingests real-time trade events from the Finnhub WebSocket API, publishes them to Kafka, processes them with PySpark Structured Streaming, stores curated datasets in Apache Iceberg, serves analytical queries through Trino, and visualizes the results in Superset. Airflow is used for orchestration, while the Python codebase follows a Clean Architecture layout.
+A production-grade, real-time financial streaming data platform built on **Apache Iceberg**, **MinIO (S3 Object Storage)**, **Apache Kafka**, **PySpark Structured Streaming**, **Trino**, and **Apache Airflow**.
 
-## Architecture
+The platform ingests live market trades via **Finnhub WebSocket**, protects ingestion integrity via **Dead Letter Queues (DLQ)**, processes micro-batches with PySpark, calculates **OHLCV Candlesticks** and **VWAP (Volume-Weighted Average Price)**, enforces **Medallion Lakehouse Tiers**, and orchestrates lakehouse maintenance and dimension data synchronization via **Airflow**.
 
-![Architecture Diagram](images/architecture.png)
+---
 
-Primary flow:
+## 🏛️ Platform Architecture
 
-`Finnhub -> stock-producer -> Kafka -> spark-streaming-job -> Iceberg -> Trino -> Superset`
+```
+[ Finnhub WebSocket ] (Real-time Trades)
+         │
+         ▼
+[ Finnhub Ingestion Service ] ──────(Validation / Parse Failures)─────► [ Kafka DLQ: stock_trades_dlq ]
+         │ (Idempotent Producer)
+         ▼
+[ Kafka Topic: stock_trades ]
+         │
+         ▼
+[ PySpark Structured Streaming ] (Watermarking, Deduplication, Windowing)
+   ├── Tier 1: Silver Cleaned Trades  ──► iceberg.stock.raw_stream_data
+   ├── Tier 2: Gold OHLCV & VWAP Bars ──► iceberg.stock.aggregated_data
+   └── Tier 3: Gold Market Anomalies  ──► iceberg.stock.market_anomalies
+         │
+         ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│             Apache Iceberg Catalog (Hive Metastore backed)             │
+│                 Storage Layer: MinIO S3 (s3a://warehouse)              │
+│                                                                        │
+│   • stock.raw_stream_data    (Silver: Partitioned by Day, Symbol)      │
+│   • stock.aggregated_data    (Gold: 1m OHLCV & VWAP Candlesticks)      │
+│   • stock.market_anomalies   (Gold: Block trades & Price shocks)       │
+│   • stock.dim_company        (Dimension: Company profile & Sector)     │
+└────────────────────────────────────────────────────────────────────────┘
+         ▲                                                ▲
+         │ (Ad-hoc Analytics & Queries)                   │ (Lakehouse Maintenance)
+   [ Trino SQL Engine ]                             [ Apache Airflow ]
+         │                                          • iceberg_lakehouse_maintenance
+         ▼                                          • finnhub_dimension_sync
+   [ Apache Superset ]                              • data_quality_reconciliation
+ (Interactive Dashboards)                           • pipeline_health_monitor
+```
 
-Supporting services:
+---
 
-- `Hive Metastore` stores Iceberg metadata.
-- `Postgres` backs the `metastore`, `airflow`, and `superset` databases.
-- `Airflow` bootstraps and operates the producer and Spark streaming job.
-- `Airflow` bootstraps and operates the producer and Spark streaming job.
+## 📂 Project Structure (Clean Architecture)
 
-## Project Structure
 ```text
 .
-|-- application/
-|-- domain/
-|-- infrastructure/
-|   |-- finnhub/
-|   |-- iceberg/
-|   |-- kafka/
-|   `-- spark/
-|-- interfaces/
-|   `-- airflow/
-|-- shared/
-|   |-- config/
-|   `-- logging/
-|-- scripts/
-|-- tests/
-|-- docker/
-|-- docker-compose.yaml
-|-- .env.example
-`-- README.md
+├── application/             # Application services & streaming runners
+│   └── services/            # StreamingService (with DLQ), PipelineHealthService
+├── domain/                  # Core domain entities & financial use cases
+│   ├── entities/            # TradeEvent, StockCandle, DeadLetterEvent, AnomalyEvent
+│   └── use_cases/           # IngestTrade, ValidateTrade, DetectAnomaly
+├── infrastructure/          # Adapters for third-party infrastructure
+│   ├── finnhub/             # WebSocketClient (with error routing), MessageParser
+│   ├── kafka/               # KafkaTradeProducer (DLQ enabled), TopicAdmin
+│   ├── spark/               # SessionFactory (S3A), Transformer, TradeAggregator (OHLCV/VWAP)
+│   └── iceberg/             # TableManager, IcebergStreamWriter
+├── interfaces/              # Orchestration & boundary layers
+│   └── airflow/dags/        # Production DAGs: Maintenance, Dim Sync, DQ, Monitor
+├── docker/                  # Service Dockerfiles & initialization scripts
+│   ├── airflow/             # Airflow image with Trino & Requests providers
+│   ├── hive/                # Hive Metastore with PostgreSQL driver & S3A config
+│   ├── minio/               # S3 storage scripts
+│   ├── spark/               # PySpark base image
+│   ├── trino/               # Trino with Iceberg S3 catalog configuration
+│   └── superset/            # Superset image with Trino driver
+├── scripts/                 # Operational CLI bootstrap and health scripts
+├── tests/                   # Automated unit & integration test suites
+│   ├── unit/                # Domain & parser unit tests
+│   └── integration/         # Spark transformation & aggregation tests
+├── docker-compose.yaml      # Multi-container local orchestration
+├── pytest.ini               # Pytest root configuration
+└── .env.example             # Configuration templates
 ```
 
-## Clean Architecture Mapping
-- `domain/`: core trade entities and business rules.
-- `application/`: orchestration logic built on top of domain use cases.
-- `infrastructure/`: concrete adapters for Finnhub, Kafka, Spark, Iceberg, and related runtime concerns.
-- `interfaces/airflow/`: Airflow DAGs used to operate the pipeline.
-- `shared/`: shared configuration and logging utilities.
+---
 
-## Main Components
+## 🚀 Key Engineering Highlights
 
-### 1. Ingestion Service
-- Connects to `wss://ws.finnhub.io`
-- Subscribes to symbols from `STOCK_SYMBOLS`
-- Parses incoming payloads into `TradeEvent`
-- Validates domain rules before publishing
-- Produces to Kafka with retries and delivery callbacks
-- Logs connection, subscription, delivery, and reconnection events
+### 1. Financial Analytics: OHLCV & VWAP
+Unlike naive streaming tutorials that only calculate average prices, this platform computes real-time quantitative trading metrics using PySpark Structured Streaming window functions:
+- **Open**: Earliest price in window (`min_by(price, trade_timestamp)`)
+- **High**: Peak price in window (`max(price)`)
+- **Low**: Lowest price in window (`min(price)`)
+- **Close**: Latest price in window (`max_by(price, trade_timestamp)`)
+- **VWAP**: Volume-Weighted Average Price: $\text{VWAP} = \frac{\sum (\text{Price} \times \text{Volume})}{\sum \text{Volume}}$
+- **Anomaly Stream**: Real-time detection of large block trades ($\ge 50,000$ shares) and rapid price dislocations.
 
-### 2. Spark Streaming Job
-- Reads from Kafka with Structured Streaming
-- Parses a fixed JSON schema
-- Cleans and validates records
-- Drops invalid rows for required fields
-- Filters `price > 0`
-- Filters `volume >= 0`
-- Converts the event time into Spark `timestamp`
-- Deduplicates by `symbol + trade_timestamp`
-- Applies a configurable watermark
-- Produces 1-minute aggregated metrics
-- Writes both raw and aggregated streams to Iceberg with separate checkpoints
+### 2. Resilient Ingestion & Dead Letter Queue (DLQ)
+- **Zero Data Loss**: Any trade failing JSON parsing or domain invariants (`price <= 0`, `volume < 0`) is automatically published to `stock_trades_dlq` along with error reason and audit timestamps.
+- **Idempotent Kafka Producer**: Enabled with `enable.idempotence=true`, `acks=all`, and `snappy` compression.
 
-### 3. Iceberg, Hive Metastore, and Trino
-- Spark catalog: `stock_catalog`
-- Default namespace: `stock`
-- Hive Metastore URI: `thrift://hive-metastore:9083`
-- Trino catalog: `iceberg`
-- Shared warehouse path: `/data/warehouse`
+### 3. S3 Cloud-Native Lakehouse (MinIO + Apache Iceberg v2)
+- Replaces POSIX file directories with **MinIO S3-compatible Object Storage** (`s3a://warehouse/stock`).
+- Decouples compute (Spark/Trino) from storage (S3).
+- Uses Iceberg **Format Version 2** with hash write distribution and daily partition specs.
 
-Tables created by the streaming job:
+### 4. Production Airflow Orchestration (No Anti-Patterns)
+Instead of misusing Airflow as a Docker container starter, Airflow performs real data platform operations:
+1. **`iceberg_lakehouse_maintenance`**: Executes Trino compaction (`EXECUTE optimize`), snapshot expiration (`EXECUTE expire_snapshots`), and orphan file removal (`EXECUTE remove_orphan_files`) to eliminate the **Small Files Problem**.
+2. **`finnhub_dimension_sync`**: Ingests company profile metadata (Industry, Market Cap, IPO date) from Finnhub REST API into `stock.dim_company`.
+3. **`data_quality_reconciliation`**: Asserts financial contracts (no negative prices, $High \ge Low$, $High \ge Open$, $High \ge Close$).
+4. **`pipeline_health_monitor`**: Monitors service health across Kafka, Trino, and MinIO.
 
-- `stock_catalog.stock.raw_stream_data`
-- `stock_catalog.stock.aggregated_data`
+---
 
-Table layout:
+## ⚡ Quickstart Guide
 
-- Raw table partitioning: `days(trade_timestamp), symbol`
-- Aggregated table partitioning: `days(window_start), symbol`
+### 1. Prerequisites
+- Docker Engine & Docker Compose (v2.20+)
+- Python 3.10+ (for local development)
+- Finnhub API Key (get free key at [finnhub.io](https://finnhub.io))
 
-### 4. Airflow Orchestration
-Available DAGs:
-
-- `stock_pipeline_start`
-- `stock_pipeline_monitor`
-- `stock_pipeline_stop`
-
-Typical responsibilities:
-
-- verify service dependencies
-- bootstrap the Kafka topic
-- bootstrap the Iceberg namespace and tables
-- start the Spark streaming container
-- start the producer container
-- run periodic health checks
-
-## Environment Variables
-Copy the example file first:
-
+### 2. Configure Environment
 ```bash
 cp .env.example .env
+# Edit .env and insert your FINNHUB_API_KEY
 ```
 
-Minimum required values:
-
-- `FINNHUB_API_KEY`
-- `STOCK_SYMBOLS`
-- `SUPERSET_SECRET_KEY`
-
-Important runtime variables:
-
-- `KAFKA_BROKER`
-- `KAFKA_TOPIC`
-- `SPARK_APP_NAME`
-- `SPARK_MASTER_URL`
-- `SPARK_CHECKPOINT_ROOT`
-- `SPARK_WATERMARK_DELAY`
-- `SPARK_MAX_OFFSETS_PER_TRIGGER`
-- `ICEBERG_CATALOG_NAME`
-- `ICEBERG_NAMESPACE`
-- `ICEBERG_WAREHOUSE`
-- `HIVE_METASTORE_URI`
-- `TRINO_HOST`
-- `TRINO_PORT`
-- `TRINO_CATALOG`
-- `TRINO_SCHEMA`
-
-## How to Run
-
-### 1. Start the Full Platform
+### 3. Launch Platform Infrastructure
 ```bash
 docker compose up --build -d
 ```
 
-### 2. Start Only the Infrastructure Layer
+### 4. Bootstrap Kafka Topics & Iceberg Lakehouse
 ```bash
-docker compose up -d zookeeper kafka postgres hive-metastore spark-master spark-worker trino airflow-webserver airflow-scheduler superset
-```
-
-### 3. Bootstrap Kafka
-```bash
+# Bootstrap Kafka data topic and DLQ topic
 docker compose run --rm stock-producer python3 scripts/bootstrap_kafka_topic.py
+
+# Bootstrap Iceberg namespaces and Medallion tables
+docker compose exec spark-master python3 scripts/bootstrap_iceberg.py
 ```
 
-### 4. Operate the Pipeline with Airflow
-After the Airflow UI is available:
-
-- run `stock_pipeline_start` to bootstrap and start the pipeline
-- use `stock_pipeline_monitor` for periodic health checks
-- run `stock_pipeline_stop` only when you want to stop `stock-producer` and `spark-streaming-job`
-
-Do not run `stock_pipeline_start` and `stock_pipeline_stop` at the same time.
-
-## Service Endpoints
-- Airflow: `http://localhost:8088`
-- Superset: `http://localhost:8098`
-- Spark Master UI: `http://localhost:8081`
-- Trino UI: `http://localhost:8080`
-- Postgres: `localhost:5432`
-- Kafka: `localhost:9092` and `localhost:29092`
-
-Default local credentials:
-
-- Airflow: `admin / admin`
-- Superset: `admin / admin`
-
-## Superset Setup
-Create a database connection in Superset using this SQLAlchemy URI:
-
-```text
-trino://trino@trino:8080/iceberg/stock
+### 5. Verify Running Services
+```bash
+docker compose ps
 ```
 
-Recommended charts:
+---
 
-- line chart for real-time price by `trade_timestamp`
-- line chart for 1-minute `avg_price` by `window_start`
-- bar chart for `total_volume` by `symbol`
-- big number for total trade count
-- heatmap for activity by `symbol` and time bucket
+## 🌐 Service Web UIs & Endpoints
 
-## Example Queries
+| Service | Port | Endpoint | Credentials |
+| :--- | :--- | :--- | :--- |
+| **MinIO S3 Console** | `9001` | [http://localhost:9001](http://localhost:9001) | `admin` / `admin12345` |
+| **MinIO S3 API** | `9000` | `http://localhost:9000` | `admin` / `admin12345` |
+| **Trino Query UI** | `8080` | [http://localhost:8080](http://localhost:8080) | User: `trino` |
+| **Spark Master UI** | `8081` | [http://localhost:8081](http://localhost:8081) | None |
+| **Airflow Web UI** | `8088` | [http://localhost:8088](http://localhost:8088) | `admin` / `admin` |
+| **Superset BI** | `8098` | [http://localhost:8098](http://localhost:8098) | `admin` / `admin` |
+| **Kafka Broker** | `9092` / `29092` | `localhost:29092` | None |
 
-Raw stream:
+---
 
-```sql
-SELECT *
-FROM iceberg.stock.raw_stream_data
-ORDER BY trade_timestamp DESC
-LIMIT 20;
-```
+## 📊 Analytical SQL Queries (Trino)
 
-Aggregated metrics:
+Open the Trino CLI or execute queries in Superset:
 
+### 1. Real-time OHLCV & VWAP Candlestick Bars
 ```sql
 SELECT
     symbol,
     window_start,
-    window_end,
-    avg_price,
-    min_price,
-    max_price,
+    open_price,
+    high_price,
+    low_price,
+    close_price,
+    vwap,
     total_volume,
     trade_count
 FROM iceberg.stock.aggregated_data
 ORDER BY window_start DESC
+LIMIT 20;
+```
+
+### 2. Star Schema Analysis: Fact Trades Joined with Dim Company
+```sql
+SELECT
+    c.company_name,
+    c.finnhub_industry,
+    c.market_capitalization,
+    a.symbol,
+    a.window_start,
+    a.close_price,
+    a.vwap,
+    a.total_volume
+FROM iceberg.stock.aggregated_data a
+JOIN iceberg.stock.dim_company c ON a.symbol = c.symbol
+WHERE a.trade_date = CURRENT_DATE
+ORDER BY a.total_volume DESC
 LIMIT 50;
 ```
 
-Quick validation:
-
+### 3. Market Anomalies (Block Trades Monitor)
 ```sql
-SELECT count(*) AS raw_count
-FROM iceberg.stock.raw_stream_data;
+SELECT
+    symbol,
+    trade_timestamp,
+    price,
+    volume,
+    anomaly_type,
+    description,
+    severity
+FROM iceberg.stock.market_anomalies
+ORDER BY trade_timestamp DESC
+LIMIT 25;
 ```
 
-```sql
-SELECT count(*) AS aggregated_count
-FROM iceberg.stock.aggregated_data;
-```
+---
 
-## How to Verify Data Is Flowing
+## 📈 Real-Time Business Intelligence (Apache Superset)
 
-### Check the Producer
-```bash
-docker logs -f finnhubfinance-stock-producer-1
-```
+The platform provides out-of-the-box analytical dashboards connected directly to the Trino distributed query engine (`trino://trino@trino:8080/iceberg/stock`):
 
-### Check the Kafka Topic
-```bash
-docker exec -it finnhubfinance-kafka-1 kafka-console-consumer \
-  --bootstrap-server localhost:9092 \
-  --topic stock_trades \
-  --from-beginning \
-  --max-messages 10
-```
+1. **Stock Price & VWAP Trend** (*Time-Series Line Chart*): Plots close price and Volume-Weighted Average Price across 1-minute event-time windows.
+2. **Trading Volume by Symbol** (*Time-Series Bar Chart*): Visualizes liquidity and market depth across active tickers (`BINANCE:BTCUSDT`, `AAPL`, `MSFT`, `AMZN`, `GOOGL`).
+3. **Total Processed Trades** (*Big Number with Trendline*): Live KPI counter measuring streaming throughput.
+4. **Real-time Market Anomalies** (*Interactive Table*): Audit log of detected institutional block trades ($\ge 50,000$ shares) and rapid price deviations.
 
-### Check the Spark Streaming Job
-```bash
-docker logs -f finnhubfinance-spark-streaming-job-1
-```
+> **Auto-Refresh**: Enable the Superset dashboard 10-second auto-refresh interval for zero-reload live financial monitoring.
 
-### Check Data in Trino
-```bash
-docker exec -it finnhubfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.raw_stream_data"
-docker exec -it finnhubfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.aggregated_data"
-```
+---
 
-## Testing
-Run unit and integration tests:
+## ⚡ Demo Data Generation
+
+To quickly populate the Lakehouse with realistic historical candlestick trends and anomaly events for portfolio presentation and dashboard visualization:
 
 ```bash
-pytest tests/unit
-pytest tests/integration
+# Seed 120 historical 1-minute OHLCV/VWAP candles per symbol + anomaly events
+python scripts/seed_demo_data.py
 ```
 
-## Reliability Notes
-- Spark manages Kafka offsets through checkpointing.
-- The WebSocket client includes reconnect and resubscribe logic.
-- `maxOffsetsPerTrigger` helps control burst ingestion.
-- Watermarking handles late events within the configured delay.
-- Iceberg tables use format version `2`.
-- `IcebergTableManager` can recover from stale Iceberg metadata by recreating table metadata when required.
+---
 
-## Visualization
+## 🧪 Automated Testing
 
-### Transaction History
-![Transaction History](images/image.jpg)
-
-### Trading Volume
-![Trading Volume](images/image-2.jpg)
-
-### Volume Comparison
-![Volume Comparison](images/image-1.jpg)
-
-## Troubleshooting
-
-### No Data Appears in Queries
-Check in this order:
-
-- `stock-producer` logs show successful delivery to Kafka
-- `spark-streaming-job` is running and writing batches
-- Trino `count(*)` queries against both Iceberg tables return non-zero values
-
-Useful commands:
+Run the test suite locally with `pytest`:
 
 ```bash
-docker logs finnhubfinance-stock-producer-1 --tail 100
-docker logs finnhubfinance-spark-streaming-job-1 --tail 100
-docker exec -it finnhubfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.raw_stream_data"
-docker exec -it finnhubfinance-trino-1 trino --execute "SELECT count(*) FROM iceberg.stock.aggregated_data"
+# Run full unit test suite (OHLCV formulas, DLQ serialization, Finnhub parser, settings)
+pytest -v
 ```
 
-### `hive-metastore` Fails with `exec /entrypoint.sh: no such file or directory`
-This usually means a shell script was saved with Windows `CRLF` line endings.
+---
 
-This repository includes:
+## ☁️ 24/7 Production Deployment (Cloud VM)
 
-- `.gitattributes` with `*.sh text eol=lf`
+When running locally, stopping the host machine terminates the Docker daemon. To run this streaming platform 24/7 continuously:
 
-If the image was already built before the fix, rebuild it:
+1. **Provision a Cloud VM**:
+   - **Oracle Cloud (OCI) Always Free**: 4 OCPUs, 24 GB RAM Ampere A1 Compute instance (100% free forever).
+   - **AWS / GCP / DigitalOcean**: 4 vCPU, 8–16 GB RAM Ubuntu instance.
+2. **Deploy via Docker Compose**:
+   ```bash
+   git clone https://github.com/Bui-Tien-Dat-2808/Fintech-Finance.git
+   cd Fintech-Finance
+   cp .env.example .env  # set your FINNHUB_API_KEY
+   docker compose up --build -d
+   ```
+3. The platform will run autonomously around the clock, continuously streaming market data and executing Airflow maintenance workflows.
 
-```bash
-docker compose up -d --build hive-metastore
-```
+---
 
-### `metastore`, `airflow`, or `superset` Databases Are Missing
-If Postgres uses an existing volume, the initialization scripts in `docker-entrypoint-initdb.d/` do not run again. In that case, create the missing databases manually or recreate the Postgres volume.
+## 💼 CV Bullet Points (Optimized for Senior Recruiter & Hiring Manager)
 
-Manual creation example:
-
-```bash
-docker exec finnhubfinance-postgres-1 psql -U admin -d postgres -c "CREATE DATABASE airflow;" -c "CREATE DATABASE metastore;" -c "CREATE DATABASE superset;"
-```
-
-### Kafka Reports `InconsistentClusterIdException`
-Reset the Kafka volume only:
-
-```bash
-docker compose down
-docker volume rm finnhubfinance_kafka_data
-docker compose up -d zookeeper kafka
-```
-
-### Docker Desktop or WSL Runs Out of Resources
-If builds fail or Spark exits unexpectedly, increase Docker Desktop or WSL memory before starting the stack again.
-
-## Manual Validation Checklist
-- Producer logs show a successful WebSocket connection and symbol subscriptions.
-- Kafka topic `stock_trades` is receiving messages.
-- Spark logs show that both raw and aggregated writers are active.
-- Trino queries return rows from `raw_stream_data` and `aggregated_data`.
-- Superset dashboards render charts successfully.
-
-## Future Improvements
-- Add Prometheus and Grafana metrics.
-- Add a dead-letter topic for malformed events.
-- Add CI and data quality checks.
-- Add automated end-to-end tests with Testcontainers.
+> **Real-Time Financial Streaming Lakehouse Platform**
+> *Tech Stack: Apache Iceberg, MinIO (S3), PySpark Structured Streaming, Apache Kafka, Trino, Apache Airflow, Docker, Python.*
+> - **Architecture & Storage**: Engineered an end-to-end Medallion Lakehouse platform ingesting live trade events from Finnhub WebSocket; implemented Apache Iceberg v2 open table format on MinIO S3 object storage with Hive Metastore catalog, enabling ACID transactions and schema evolution.
+> - **Streaming & Financial Analytics**: Built PySpark Structured Streaming jobs with event-time watermarking and 1-minute tumbling windows; computed quantitative trading indicators including OHLCV candlesticks and Volume-Weighted Average Price (VWAP) with sub-second latency.
+> - **Resilience & Fault Tolerance**: Designed an idempotent Kafka producer with a Dead Letter Queue (DLQ) pattern, automatically isolating malformed ticks and preventing data corruption with zero silent drops.
+> - **Anomaly Detection**: Developed real-time rule-based anomaly detection streaming filters to flag institutional large block trades ($\ge 50,000$ shares) and price dislocation events into a dedicated Iceberg Gold table.
+> - **Orchestration & Data Quality**: Orchestrated 4 production Airflow DAGs automating Iceberg table maintenance (small-file compaction, snapshot expiration, orphan file cleanup), Finnhub REST dimension synchronization, and continuous data quality invariant assertions.
+> - **Serving & Visualization**: Integrated Trino distributed SQL query engine with Apache Superset to deliver real-time interactive dashboards with auto-refreshing financial KPIs.

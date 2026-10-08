@@ -6,3 +6,7 @@ __pycache__/
 .vscode/
 metastore_db/
 derby.log
+spark-warehouse/
+.coverage
+htmlcov/
+.agents/

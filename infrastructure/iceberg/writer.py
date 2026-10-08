@@ -50,6 +50,24 @@ class IcebergStreamWriter:
             .start()
         )
 
+    def write_anomalies(self, df: DataFrame) -> StreamingQuery:
+        target_table = self._target_table("market_anomalies")
+        checkpoint = f"{self._settings.spark_checkpoint_root}/market_anomalies"
+        self._logger.info("Starting market anomalies stream write. table=%s", target_table)
+        return (
+            df.writeStream.outputMode("append")
+            .foreachBatch(
+                lambda batch_df, batch_id: self._write_batch(
+                    batch_df=batch_df,
+                    batch_id=batch_id,
+                    target_table=target_table,
+                )
+            )
+            .option("checkpointLocation", checkpoint)
+            .queryName("market_anomalies_writer")
+            .start()
+        )
+
     def _write_batch(self, batch_df: DataFrame, batch_id: int, target_table: str) -> None:
         if batch_df.isEmpty():
             self._logger.info("Skipping empty batch. table=%s batch_id=%s", target_table, batch_id)

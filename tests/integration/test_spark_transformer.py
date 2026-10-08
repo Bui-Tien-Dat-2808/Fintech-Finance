@@ -47,8 +47,10 @@ def test_clean_and_aggregate_stream() -> None:
 
     assert len(result) == 1
 
-    aggregated = TradeAggregator.aggregate_1m(clean_df, "2 minutes").collect()
+    aggregated = TradeAggregator.aggregate_candles(clean_df, "2 minutes").collect()
     assert len(aggregated) == 1
     assert aggregated[0]["trade_count"] == 1
+    assert aggregated[0]["open_price"] == 189.42
+    assert aggregated[0]["close_price"] == 189.42
 
     spark.stop()
